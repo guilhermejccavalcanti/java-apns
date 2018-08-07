@@ -1,22 +1,22 @@
 package com.notnoop.apns.internal;
 
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
+import org.slf4j.LoggerFactory;
+import org.slf4j.Logger;
 import com.notnoop.apns.ApnsNotification;
 import com.notnoop.exceptions.NetworkIOException;
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class ApnsPooledConnection implements ApnsConnection {
+
     private static final Logger logger = LoggerFactory.getLogger(ApnsPooledConnection.class);
 
     private final ApnsConnection prototype;
+
     private final int max;
 
     private final ExecutorService executors;
+
     private final ConcurrentLinkedQueue<ApnsConnection> prototypes;
 
     public ApnsPooledConnection(ApnsConnection prototype, int max) {
@@ -26,13 +26,12 @@ public class ApnsPooledConnection implements ApnsConnection {
     public ApnsPooledConnection(ApnsConnection prototype, int max, ExecutorService executors) {
         this.prototype = prototype;
         this.max = max;
-
         this.executors = executors;
         this.prototypes = new ConcurrentLinkedQueue<ApnsConnection>();
     }
 
-    private final ThreadLocal<ApnsConnection> uniquePrototype =
-        new ThreadLocal<ApnsConnection>() {
+    private final ThreadLocal<ApnsConnection> uniquePrototype = new ThreadLocal<ApnsConnection>() {
+
         protected ApnsConnection initialValue() {
             ApnsConnection newCopy = prototype.copy();
             prototypes.add(newCopy);
@@ -41,15 +40,25 @@ public class ApnsPooledConnection implements ApnsConnection {
     };
 
     public void sendMessage(final ApnsNotification m) throws NetworkIOException {
-        executors.execute(new Runnable() {
-            public void run() {
+        Future future = executors.submit(new Callable<Void>() {
+
+            public Void call() throws Exception {
                 uniquePrototype.get().sendMessage(m);
+                return null;
             }
         });
+        try {
+            future.get();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException ee) {
+            if (ee.getCause() instanceof NetworkIOException) {
+                throw (NetworkIOException) ee.getCause();
+            }
+        }
     }
 
     public ApnsConnection copy() {
-        // TODO: Should copy executor properly.... What should copy do
         // really?!
         return new ApnsPooledConnection(prototype, max);
     }
@@ -71,7 +80,7 @@ public class ApnsPooledConnection implements ApnsConnection {
         prototype.testConnection();
     }
 
-    public synchronized void setCacheLength(int cacheLength) {  
+    public synchronized void setCacheLength(int cacheLength) {
         for (ApnsConnection conn : prototypes) {
             conn.setCacheLength(cacheLength);
         }
